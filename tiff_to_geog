@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Mon Apr 15 13:13:02 2019
+This script is written to convert a given raster tiff file to the geogrid binary file and its corresponding index file.
+The geogrid binary file is ingested by WPS to produce static fields for WRF.
+
+References:
+[1] https://gis.stackexchange.com/questions/221292/retrieve-pixel-value-with-geographic-coordinate-as-input-with-gdal
+[2] ARW User's Guide
+@author: nms6, modified by Gil Bilang
+"""
+
+from osgeo import gdal,ogr,osr
+import numpy as np
+from numpy import *
+import struct
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+
+
+# Extract raster data
+driver = gdal.GetDriverByName('GTiff')
+filename = './2005.tif'
+dataset = gdal.Open(filename)
+band = dataset.GetRasterBand(1)
+
+# Extract number of rows and cols
+cols = dataset.RasterXSize
+rows = dataset.RasterYSize
+
+# Extract coordinates metadata
+transform = dataset.GetGeoTransform()
+xOrigin = transform[0]
+yOrigin = transform[3]
+pixelWidth = transform[1]
+pixelHeight = -transform[5] # Negative value! Reference point is northeast corner point
+
+# Extract raster pixel data as numpy.array
+data = band.ReadAsArray(0, 0, cols, rows)
+data_nan = isnan(data)
+data[data==0] = 255
+
+# Compute for x, y coordinates of pixels
+x = [xOrigin + i*pixelWidth for i in range(0,cols)]
+y = [yOrigin + i*pixelHeight for i in range(0,rows)]
+x, y = np.meshgrid(x, y)
+
+# Plot to check if extents are correct
+plot_raster = False
+if plot_raster:  
+    plot_data = np.copy(data.astype('float'))
+    plot_data[plot_data == noData] = np.nan
+    fig = plt.figure()
+    ax = plt.axes(projection=ccrs.PlateCarree())
+    ax.coastlines('10m')
+    ax.contourf(x, y, plot_data)
+    ax.set_xlim((119,124))
+    ax.set_ylim((12,16))
+    plt.show()
+    plt.close(fig)
+    
+# Free resources
+dataset = None
+band = None
+
+# Flip data so that it starts from southernmost row
+#elev = np.copy(data)
+elev = np.flip(data, axis=0)
+elev = elev.astype(np.uint8)
+print(elev.dtype)
+
+# Filename strings
+xystart = str(1).zfill(5)
+xend = str(cols).zfill(5)
+yend = str(rows).zfill(5)
+
+# Write binary file
+with open('%s-%s.%s-%s'%(xystart, xend, xystart, yend), 'wb') as ff:
+    for i in elev.ravel():
+        ff.write(struct.pack('>h', i)) # '>': big endian ; 'h': short, 2-byte signed
+
+# Write index file
+with open('index', 'w') as ff:
+    ff.write('type = continuous\n')
+    ff.write('signed = yes\n')
+    ff.write('projection = regular_ll\n')
+    ff.write('dx = ' + str(pixelWidth) + '\n')
+    ff.write('dy = ' + str(abs(pixelHeight)) + '\n')
+    ff.write('known_x = 1.0\n')
+    ff.write('known_y = 1.0\n')
+    ff.write('known_lat = ' + str(y.min()) + '\n')
+    ff.write('known_lon = ' + str(x.min()) + '\n')
+    ff.write('wordsize = 2\n')
+    ff.write('endian = big\n')
+    ff.write('tile_x = ' + str(cols) + '\n')
+    ff.write('tile_y = ' + str(rows) + '\n')
+    ff.write('tile_z = 1\n')
+    ff.write('row_order = bottom_top\n')
+   #ff.write('missing_value = %d\n' % noData)
+    ff.write('units = "meters MSL"\n')
+    ff.write('description = "Iloilo Land Cover"\n')
